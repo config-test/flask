@@ -1,0 +1,29 @@
+version: 2.1
+
+jobs:
+  test:
+    docker:
+      - image: cimg/python:3.14
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-uv-{{ checksum "uv.lock" }}
+      - run:
+          name: Install dependencies
+          command: uv sync
+      - save_cache:
+          key: v1-uv-{{ checksum "uv.lock" }}
+          paths:
+            - ~/.cache/uv
+      - run:
+          name: Test
+          command: uv run pytest -v --tb=short
+      - run:
+          name: Lint
+          command: uv run pre-commit run --all-files
+
+workflows:
+  main:
+    jobs:
+      - test
