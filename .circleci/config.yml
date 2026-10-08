@@ -1,0 +1,29 @@
+version: 2.1
+
+jobs:
+  tests:
+    docker:
+      - image: cimg/python:3.14
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - uv-py3.14-{{ checksum "uv.lock" }}
+      - run:
+          name: Install uv
+          command: pip install uv
+      - run:
+          name: Install dependencies
+          command: uv sync --locked --no-default-groups --group tests
+      - run:
+          name: Run tests
+          command: uv run --no-sync pytest -v --tb=short
+      - save_cache:
+          key: uv-py3.14-{{ checksum "uv.lock" }}
+          paths:
+            - ~/.cache/uv
+
+workflows:
+  ci:
+    jobs:
+      - tests
