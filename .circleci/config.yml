@@ -1,0 +1,258 @@
+version: 2.1
+
+# Flask (Pallets) — Python project managed with uv + tox.
+# Commands below are taken from pyproject.toml ([tool.tox.*]) and mirror the
+# GitHub Actions workflows that previously lived in .github/workflows/
+# (tests.yaml, pre-commit.yaml, publish.yaml) as of commit e498f4f5^.
+# No orbs are used, so there are no orb versions to pin.
+
+executors:
+  python:
+    parameters:
+      version:
+        type: string
+    docker:
+      - image: cimg/python:<< parameters.version >>
+    working_directory: ~/project
+
+commands:
+  install_uv:
+    description: Install uv, pinned to the version frozen in .pre-commit-config.yaml.
+    steps:
+      - run:
+          name: Install uv 0.12.0
+          command: |
+            pip install --disable-pip-version-check --quiet "uv==0.12.0"
+            uv --version
+
+  restore_uv_cache:
+    parameters:
+      key:
+        type: string
+    steps:
+      - restore_cache:
+          keys:
+            - uv-v1-<< parameters.key >>-{{ checksum "uv.lock" }}
+            - uv-v1-<< parameters.key >>-
+
+  save_uv_cache:
+    parameters:
+      key:
+        type: string
+    steps:
+      - save_cache:
+          key: uv-v1-<< parameters.key >>-{{ checksum "uv.lock" }}
+          paths:
+            - ~/.cache/uv
+
+jobs:
+  # ---------------------------------------------------------------- root: Flask
+  tests:
+    parameters:
+      python:
+        description: Python version of the cimg image (must satisfy requires-python >=3.11).
+        type: string
+      tox-env:
+        description: tox environment from [tool.tox] env_list in pyproject.toml.
+        type: string
+    executor:
+      name: python
+      version: << parameters.python >>
+    steps:
+      - checkout
+      - install_uv
+      - restore_uv_cache:
+          key: tests-<< parameters.tox-env >>-<< parameters.python >>
+      - run:
+          name: tox run -e << parameters.tox-env >>
+          command: |
+            uv run --locked --no-default-groups --group dev \
+              tox run -e << parameters.tox-env >> \
+              -- --junitxml=test-results/pytest/results.xml
+      - save_uv_cache:
+          key: tests-<< parameters.tox-env >>-<< parameters.python >>
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: test-results
+          destination: test-results
+
+  typing:
+    executor:
+      name: python
+      # pyproject.toml requires-python = ">=3.11"; [tool.mypy] python_version = "3.11".
+      version: "3.11"
+    steps:
+      - checkout
+      - install_uv
+      - restore_uv_cache:
+          key: typing
+      - restore_cache:
+          keys:
+            - mypy-v1-{{ checksum "pyproject.toml" }}
+      - run:
+          name: tox run -e typing (mypy)
+          command: uv run --locked --no-default-groups --group dev tox run -e typing
+      - save_uv_cache:
+          key: typing
+      - save_cache:
+          key: mypy-v1-{{ checksum "pyproject.toml" }}
+          paths:
+            - ./.mypy_cache
+
+  style:
+    executor:
+      name: python
+      version: "3.11"
+    steps:
+      - checkout
+      - install_uv
+      - restore_uv_cache:
+          key: style
+      - restore_cache:
+          keys:
+            - pre-commit-v1-{{ checksum "pyproject.toml" }}-{{ checksum ".pre-commit-config.yaml" }}
+      - run:
+          name: tox run -e style (pre-commit, all files)
+          command: |
+            uv run --locked --no-default-groups --group pre-commit \
+              pre-commit run --show-diff-on-failure --color=always --all-files
+      - save_uv_cache:
+          key: style
+      - save_cache:
+          key: pre-commit-v1-{{ checksum "pyproject.toml" }}-{{ checksum ".pre-commit-config.yaml" }}
+          paths:
+            - ~/.cache/pre-commit
+
+  docs:
+    executor:
+      name: python
+      version: "3.11"
+    steps:
+      - checkout
+      - install_uv
+      - restore_uv_cache:
+          key: docs
+      - run:
+          name: tox run -e docs (sphinx-build -W)
+          command: uv run --locked --no-default-groups --group dev tox run -e docs
+      - save_uv_cache:
+          key: docs
+      - store_artifacts:
+          path: docs/_build/dirhtml
+          destination: docs
+
+  build:
+    # Mirrors the "build" job of the deleted publish.yaml. The publishing steps
+    # (GitHub release + PyPI trusted publishing) are intentionally NOT recreated;
+    # see the note at the bottom of this file.
+    executor:
+      name: python
+      version: "3.11"
+    steps:
+      - checkout
+      - install_uv
+      - run:
+          name: Reproducible build timestamp
+          command: echo "export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$BASH_ENV"
+      - run:
+          name: uv build
+          command: uv build
+      - store_artifacts:
+          path: dist
+          destination: dist
+
+  # ------------------------------------------------------- examples/ subprojects
+  example-tests:
+    parameters:
+      project:
+        description: Directory under examples/ holding its own pyproject.toml.
+        type: string
+    executor:
+      name: python
+      version: "3.13"
+    steps:
+      - checkout
+      - install_uv
+      - run:
+          name: Install examples/<< parameters.project >> against the local Flask
+          working_directory: examples/<< parameters.project >>
+          command: |
+            uv venv
+            uv pip install ../.. ".[test]"
+      - run:
+          name: pytest (examples/<< parameters.project >>)
+          working_directory: examples/<< parameters.project >>
+          command: |
+            .venv/bin/pytest -v --tb=short \
+              --junitxml=test-results/pytest/results.xml
+      - store_test_results:
+          path: examples/<< parameters.project >>/test-results
+      - store_artifacts:
+          path: examples/<< parameters.project >>/test-results
+          destination: test-results-<< parameters.project >>
+
+  example-celery:
+    # examples/celery defines no tests and no test extra, so this job only
+    # verifies that the project and its declared dependencies install.
+    executor:
+      name: python
+      version: "3.13"
+    steps:
+      - checkout
+      - install_uv
+      - run:
+          name: Install examples/celery against the local Flask
+          working_directory: examples/celery
+          command: |
+            uv venv
+            uv pip install ../.. .
+      - run:
+          name: Import check
+          working_directory: examples/celery
+          command: .venv/bin/python -c "import task_app; print(task_app.__file__)"
+
+workflows:
+  ci:
+    # All jobs are independent and run in parallel.
+    jobs:
+      - tests:
+          name: tests-py3.11
+          python: "3.11"
+          tox-env: py3.11
+      - tests:
+          name: tests-py3.12
+          python: "3.12"
+          tox-env: py3.12
+      - tests:
+          name: tests-py3.13
+          python: "3.13"
+          tox-env: py3.13
+      - tests:
+          # tox env tests-min pins base_python 3.14; uv downloads that
+          # interpreter into the 3.13 image automatically.
+          name: tests-min
+          python: "3.13"
+          tox-env: tests-min
+      - tests:
+          name: tests-dev
+          python: "3.11"
+          tox-env: tests-dev
+      - typing
+      - style
+      - docs
+      - build
+      - example-tests:
+          name: example-tutorial
+          project: tutorial
+      - example-tests:
+          name: example-javascript
+          project: javascript
+      - example-celery
+
+# Not translated from the deleted GitHub Actions workflows — see the summary:
+#   * publish.yaml: PyPI upload + GitHub release. No credentials are referenced
+#     here. To add it, create a CircleCI context exposing UV_PUBLISH_TOKEN (PyPI
+#     API token) and GITHUB_TOKEN, then add a tag-filtered workflow.
+#   * lock.yaml (dessant/lock-threads) and zizmor.yaml (GitHub Actions linting)
+#     are GitHub-platform-specific and have no CircleCI equivalent.
