@@ -1,0 +1,39 @@
+version: 2.1
+
+jobs:
+  flask:
+    docker:
+      - image: cimg/python:3.14
+    environment:
+      UV_CACHE_DIR: /home/circleci/.cache/uv
+      PRE_COMMIT_HOME: /home/circleci/.cache/pre-commit
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - flask-v1-python3.14-{{ arch }}-{{ checksum "uv.lock" }}-{{ checksum ".pre-commit-config.yaml" }}
+      - run:
+          name: Install locked dependencies and lint hooks
+          command: |
+            uv sync --locked --group docs
+            uv run --no-sync pre-commit install-hooks
+      - save_cache:
+          key: flask-v1-python3.14-{{ arch }}-{{ checksum "uv.lock" }}-{{ checksum ".pre-commit-config.yaml" }}
+          paths:
+            - /home/circleci/.cache/uv
+            - /home/circleci/.cache/pre-commit
+      - run:
+          name: Build documentation
+          command: uv run --no-sync tox -e docs
+      - run:
+          name: Build wheel and run tests
+          command: uv run --no-sync tox -e py3.14
+      - run:
+          name: Lint and type check
+          command: uv run --no-sync tox -e style,typing
+
+workflows:
+  starter:
+    jobs:
+      - flask
