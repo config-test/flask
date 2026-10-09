@@ -1,0 +1,36 @@
+version: 2.1
+
+jobs:
+  flask:
+    docker:
+      # Match the Python version in .readthedocs.yaml.
+      - image: cimg/python:3.13
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-flask-py313-{{ arch }}-{{ checksum "uv.lock" }}-{{ checksum ".pre-commit-config.yaml" }}
+      - run:
+          name: Install dependencies from uv.lock
+          command: |
+            python -m pip install uv==0.12.0
+            uv sync --locked --group docs
+      - save_cache:
+          key: v1-flask-py313-{{ arch }}-{{ checksum "uv.lock" }}-{{ checksum ".pre-commit-config.yaml" }}
+          paths:
+            - ~/.cache/uv
+            - ~/.cache/pip
+      - run:
+          name: Build documentation
+          command: uv run --frozen tox -e docs
+      - run:
+          name: Test Flask (also builds the package wheel)
+          command: uv run --frozen tox -e py3.13
+      - run:
+          name: Lint with the repository's pre-commit hooks
+          command: uv run --frozen tox -e style
+
+workflows:
+  ci:
+    jobs:
+      - flask
